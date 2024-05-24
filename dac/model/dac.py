@@ -12,7 +12,6 @@ from .base import CodecMixin
 from dac.nn.layers import Snake1d
 from dac.nn.layers import WNConv1d
 from dac.nn.layers import WNConvTranspose1d
-from dac.nn.quantize import ResidualVectorQuantize
 
 
 def init_weights(m):
@@ -144,6 +143,40 @@ class Decoder(nn.Module):
         return self.model(x)
 
 
+class DiagonalGaussianDistribution(object):
+    # from https://github.com/CompVis/stable-diffusion/blob/21f890f9da3cfbeaba8e2ac3c425ee9e998d5229/ldm/modules/distributions/distributions.py#L24
+    def __init__(self, parameters, deterministic=False):
+        self.parameters = parameters
+        self.mean, self.logvar = torch.chunk(parameters, 2, dim=1)
+        self.logvar = torch.clamp(self.logvar, -30.0, 20.0)
+        self.deterministic = deterministic
+        self.std = torch.exp(0.5 * self.logvar)
+        self.var = torch.exp(self.logvar)
+        if self.deterministic:
+            self.var = self.std = torch.zeros_like(self.mean).to(device=self.parameters.device)
+
+    def sample(self):
+        x = self.mean + self.std * torch.randn(self.mean.shape).to(device=self.parameters.device)
+        return x
+
+    def kl(self, other=None):
+        if self.deterministic:
+            return torch.Tensor([0.])
+        else:
+            if other is None:
+                return 0.5 * torch.sum(torch.pow(self.mean, 2)
+                                       + self.var - 1.0 - self.logvar,
+                                       dim=[1, 2])
+            else:
+                return 0.5 * torch.sum(
+                    torch.pow(self.mean - other.mean, 2) / other.var
+                    + self.var / other.var - 1.0 - self.logvar + other.logvar,
+                    dim=[1, 2])
+
+    def mode(self):
+        return self.mean
+
+
 class DAC(BaseModel, CodecMixin):
     def __init__(
         self,
@@ -152,10 +185,6 @@ class DAC(BaseModel, CodecMixin):
         latent_dim: int = None,
         decoder_dim: int = 1536,
         decoder_rates: List[int] = [8, 8, 4, 2],
-        n_codebooks: int = 9,
-        codebook_size: int = 1024,
-        codebook_dim: Union[int, list] = 8,
-        quantizer_dropout: bool = False,
         sample_rate: int = 44100,
     ):
         super().__init__()
@@ -174,16 +203,8 @@ class DAC(BaseModel, CodecMixin):
         self.hop_length = np.prod(encoder_rates)
         self.encoder = Encoder(encoder_dim, encoder_rates, latent_dim)
 
-        self.n_codebooks = n_codebooks
-        self.codebook_size = codebook_size
-        self.codebook_dim = codebook_dim
-        self.quantizer = ResidualVectorQuantize(
-            input_dim=latent_dim,
-            n_codebooks=n_codebooks,
-            codebook_size=codebook_size,
-            codebook_dim=codebook_dim,
-            quantizer_dropout=quantizer_dropout,
-        )
+        self.quant_conv = torch.nn.Conv1d(latent_dim, 2*latent_dim, 1)
+        self.post_quant_conv = torch.nn.Conv1d(latent_dim, latent_dim, 1)
 
         self.decoder = Decoder(
             latent_dim,
@@ -209,17 +230,14 @@ class DAC(BaseModel, CodecMixin):
     def encode(
         self,
         audio_data: torch.Tensor,
-        n_quantizers: int = None,
     ):
-        """Encode given audio data and return quantized latent codes
+        """Encode given audio data
 
         Parameters
         ----------
         audio_data : Tensor[B x 1 x T]
             Audio data to encode
-        n_quantizers : int, optional
-            Number of quantizers to use, by default None
-            If None, all quantizers are used.
+
 
         Returns
         -------
@@ -232,19 +250,14 @@ class DAC(BaseModel, CodecMixin):
                 (quantized discrete representation of input)
             "latents" : Tensor[B x N*D x T]
                 Projected latents (continuous representation of input before quantization)
-            "vq/commitment_loss" : Tensor[1]
-                Commitment loss to train encoder to predict vectors closer to codebook
-                entries
-            "vq/codebook_loss" : Tensor[1]
-                Codebook loss to update the codebook
             "length" : int
                 Number of samples in input audio
         """
         z = self.encoder(audio_data)
-        z, codes, latents, commitment_loss, codebook_loss = self.quantizer(
-            z, n_quantizers
-        )
-        return z, codes, latents, commitment_loss, codebook_loss
+        moments = self.quant_conv(z)
+        posterior = DiagonalGaussianDistribution(moments)
+        kl_loss = torch.mean(posterior.kl())
+        return posterior, kl_loss
 
     def decode(self, z: torch.Tensor):
         """Decode given latent codes and return audio data
@@ -263,13 +276,13 @@ class DAC(BaseModel, CodecMixin):
             "audio" : Tensor[B x 1 x length]
                 Decoded audio data.
         """
+        z = self.post_quant_conv(z)
         return self.decoder(z)
 
     def forward(
         self,
         audio_data: torch.Tensor,
         sample_rate: int = None,
-        n_quantizers: int = None,
     ):
         """Model forward pass
 
@@ -295,11 +308,6 @@ class DAC(BaseModel, CodecMixin):
                 (quantized discrete representation of input)
             "latents" : Tensor[B x N*D x T]
                 Projected latents (continuous representation of input before quantization)
-            "vq/commitment_loss" : Tensor[1]
-                Commitment loss to train encoder to predict vectors closer to codebook
-                entries
-            "vq/codebook_loss" : Tensor[1]
-                Codebook loss to update the codebook
             "length" : int
                 Number of samples in input audio
             "audio" : Tensor[B x 1 x length]
@@ -307,18 +315,13 @@ class DAC(BaseModel, CodecMixin):
         """
         length = audio_data.shape[-1]
         audio_data = self.preprocess(audio_data, sample_rate)
-        z, codes, latents, commitment_loss, codebook_loss = self.encode(
-            audio_data, n_quantizers
-        )
-
+        posterior, kl_loss = self.encode(audio_data)
+        z = posterior.sample()
         x = self.decode(z)
         return {
             "audio": x[..., :length],
             "z": z,
-            "codes": codes,
-            "latents": latents,
-            "vq/commitment_loss": commitment_loss,
-            "vq/codebook_loss": codebook_loss,
+            "kl_loss": kl_loss,
         }
 
 
@@ -360,5 +363,3 @@ if __name__ == "__main__":
 
     print(f"Receptive field: {rf.item()}")
 
-    x = AudioSignal(torch.randn(1, 1, 44100 * 60), 44100)
-    model.decompress(model.compress(x, verbose=True), verbose=True)
