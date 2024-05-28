@@ -203,8 +203,8 @@ class DAC(BaseModel, CodecMixin):
         self.hop_length = np.prod(encoder_rates)
         self.encoder = Encoder(encoder_dim, encoder_rates, latent_dim)
 
-        self.quant_conv = torch.nn.Conv1d(latent_dim, 2*latent_dim, 1)
-        self.post_quant_conv = torch.nn.Conv1d(latent_dim, latent_dim, 1)
+        #self.quant_conv = torch.nn.Conv1d(latent_dim, 2*latent_dim, 1)
+        #self.post_quant_conv = torch.nn.Conv1d(latent_dim, latent_dim, 1)
 
         self.decoder = Decoder(
             latent_dim,
@@ -254,10 +254,11 @@ class DAC(BaseModel, CodecMixin):
                 Number of samples in input audio
         """
         z = self.encoder(audio_data)
-        moments = self.quant_conv(z)
-        posterior = DiagonalGaussianDistribution(moments)
-        kl_loss = torch.mean(posterior.kl())
-        return posterior, kl_loss
+        return z
+        #moments = self.quant_conv(z)
+        #posterior = DiagonalGaussianDistribution(moments)
+        #kl_loss = torch.mean(posterior.kl())
+        #return posterior, kl_loss
 
     def decode(self, z: torch.Tensor):
         """Decode given latent codes and return audio data
@@ -276,7 +277,7 @@ class DAC(BaseModel, CodecMixin):
             "audio" : Tensor[B x 1 x length]
                 Decoded audio data.
         """
-        z = self.post_quant_conv(z)
+        # z = self.post_quant_conv(z)
         return self.decoder(z)
 
     def forward(
@@ -315,13 +316,14 @@ class DAC(BaseModel, CodecMixin):
         """
         length = audio_data.shape[-1]
         audio_data = self.preprocess(audio_data, sample_rate)
-        posterior, kl_loss = self.encode(audio_data)
-        z = posterior.sample()
+        z = self.encode(audio_data)
+        #posterior, kl_loss = self.encode(audio_data)
+        #z = posterior.sample()
         x = self.decode(z)
         return {
             "audio": x[..., :length],
             "z": z,
-            "kl_loss": kl_loss,
+            #"kl_loss": kl_loss,
         }
 
 

@@ -8,6 +8,13 @@ from audiotools import STFTParams
 from torch import nn
 
 
+def kl_constraint(latents):
+    mean = torch.mean(latents, dim=[0, 2])
+    var = torch.var(latents, dim=[0, 2])
+    logvar = torch.log(var)
+    return 0.5 * torch.sum(torch.pow(mean, 2) + var - 1.0 - logvar)
+
+
 class L1Loss(nn.L1Loss):
     """L1 Loss between AudioSignals. Defaults
     to comparing ``audio_data``, but any

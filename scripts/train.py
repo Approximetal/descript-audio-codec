@@ -19,6 +19,7 @@ from audiotools.ml.decorators import when
 from torch.utils.tensorboard import SummaryWriter
 
 import dac
+from dac.nn.loss import kl_constraint
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -237,7 +238,8 @@ def train_loop(state, batch, accel, lambdas):
     with accel.autocast():
         out = state.generator(signal.audio_data, signal.sample_rate)
         recons = AudioSignal(out["audio"], signal.sample_rate)
-        kl_loss = out["kl_loss"]
+        #kl_loss = out["kl_loss"]
+    kl_loss = kl_constraint(out["z"])
 
     with accel.autocast():
         output["adv/disc_loss"] = state.gan_loss.discriminator_loss(recons, signal)
