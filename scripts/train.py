@@ -238,7 +238,6 @@ def train_loop(state, batch, accel, lambdas):
     with accel.autocast():
         out = state.generator(signal.audio_data, signal.sample_rate)
         recons = AudioSignal(out["audio"], signal.sample_rate)
-        #kl_loss = out["kl_loss"]
     kl_loss = kl_constraint(out["z"])
 
     with accel.autocast():

@@ -143,40 +143,6 @@ class Decoder(nn.Module):
         return self.model(x)
 
 
-class DiagonalGaussianDistribution(object):
-    # from https://github.com/CompVis/stable-diffusion/blob/21f890f9da3cfbeaba8e2ac3c425ee9e998d5229/ldm/modules/distributions/distributions.py#L24
-    def __init__(self, parameters, deterministic=False):
-        self.parameters = parameters
-        self.mean, self.logvar = torch.chunk(parameters, 2, dim=1)
-        self.logvar = torch.clamp(self.logvar, -30.0, 20.0)
-        self.deterministic = deterministic
-        self.std = torch.exp(0.5 * self.logvar)
-        self.var = torch.exp(self.logvar)
-        if self.deterministic:
-            self.var = self.std = torch.zeros_like(self.mean).to(device=self.parameters.device)
-
-    def sample(self):
-        x = self.mean + self.std * torch.randn(self.mean.shape).to(device=self.parameters.device)
-        return x
-
-    def kl(self, other=None):
-        if self.deterministic:
-            return torch.Tensor([0.])
-        else:
-            if other is None:
-                return 0.5 * torch.sum(torch.pow(self.mean, 2)
-                                       + self.var - 1.0 - self.logvar,
-                                       dim=[1, 2])
-            else:
-                return 0.5 * torch.sum(
-                    torch.pow(self.mean - other.mean, 2) / other.var
-                    + self.var / other.var - 1.0 - self.logvar + other.logvar,
-                    dim=[1, 2])
-
-    def mode(self):
-        return self.mean
-
-
 class DAC(BaseModel, CodecMixin):
     def __init__(
         self,
@@ -202,9 +168,6 @@ class DAC(BaseModel, CodecMixin):
 
         self.hop_length = np.prod(encoder_rates)
         self.encoder = Encoder(encoder_dim, encoder_rates, latent_dim)
-
-        #self.quant_conv = torch.nn.Conv1d(latent_dim, 2*latent_dim, 1)
-        #self.post_quant_conv = torch.nn.Conv1d(latent_dim, latent_dim, 1)
 
         self.decoder = Decoder(
             latent_dim,
@@ -255,10 +218,6 @@ class DAC(BaseModel, CodecMixin):
         """
         z = self.encoder(audio_data)
         return z
-        #moments = self.quant_conv(z)
-        #posterior = DiagonalGaussianDistribution(moments)
-        #kl_loss = torch.mean(posterior.kl())
-        #return posterior, kl_loss
 
     def decode(self, z: torch.Tensor):
         """Decode given latent codes and return audio data
@@ -277,7 +236,6 @@ class DAC(BaseModel, CodecMixin):
             "audio" : Tensor[B x 1 x length]
                 Decoded audio data.
         """
-        # z = self.post_quant_conv(z)
         return self.decoder(z)
 
     def forward(
@@ -317,13 +275,10 @@ class DAC(BaseModel, CodecMixin):
         length = audio_data.shape[-1]
         audio_data = self.preprocess(audio_data, sample_rate)
         z = self.encode(audio_data)
-        #posterior, kl_loss = self.encode(audio_data)
-        #z = posterior.sample()
         x = self.decode(z)
         return {
             "audio": x[..., :length],
             "z": z,
-            #"kl_loss": kl_loss,
         }
 
 
