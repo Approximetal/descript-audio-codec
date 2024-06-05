@@ -4,6 +4,7 @@ from typing import Union
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from audiotools import AudioSignal
 from audiotools.ml import BaseModel
 from torch import nn
@@ -12,7 +13,7 @@ from .base import CodecMixin
 from dac.nn.layers import Snake1d
 from dac.nn.layers import WNConv1d
 from dac.nn.layers import WNConvTranspose1d
-from dac.nn.quantize import ResidualVectorQuantize
+from dac.nn.quantize import VectorQuantize
 
 
 def init_weights(m):
@@ -144,27 +145,27 @@ class Decoder(nn.Module):
         return self.model(x)
 
 
-class DAC(BaseModel, CodecMixin):
+class DAC(BaseModel):
     def __init__(
         self,
         encoder_dim: int = 64,
         encoder_rates: List[int] = [2, 4, 8, 8],
-        latent_dim: int = None,
+        latent_dim: int = 128,
         decoder_dim: int = 1536,
         decoder_rates: List[int] = [8, 8, 4, 2],
-        n_codebooks: int = 9,
         codebook_size: int = 1024,
         codebook_dim: Union[int, list] = 8,
-        quantizer_dropout: bool = False,
         sample_rate: int = 44100,
+        levels: int = 4
     ):
         super().__init__()
-
+        self.levels = levels
         self.encoder_dim = encoder_dim
         self.encoder_rates = encoder_rates
         self.decoder_dim = decoder_dim
         self.decoder_rates = decoder_rates
         self.sample_rate = sample_rate
+        self.sample_rates = [math.ceil(sample_rate / (2**d)) for d in reversed(range(self.levels))]
 
         if latent_dim is None:
             latent_dim = encoder_dim * (2 ** len(encoder_rates))
@@ -172,17 +173,15 @@ class DAC(BaseModel, CodecMixin):
         self.latent_dim = latent_dim
 
         self.hop_length = np.prod(encoder_rates)
-        self.encoder = Encoder(encoder_dim, encoder_rates, latent_dim)
+        self.encoders = nn.ModuleList([Encoder(encoder_dim, encoder_rates, latent_dim) for _ in range(self.levels)])
+        self.phis = nn.ModuleList([WNConv1d(latent_dim, latent_dim, kernel_size=3, padding="same") for _ in range(self.levels)])
 
-        self.n_codebooks = n_codebooks
         self.codebook_size = codebook_size
         self.codebook_dim = codebook_dim
-        self.quantizer = ResidualVectorQuantize(
+        self.quantizer = VectorQuantize(
             input_dim=latent_dim,
-            n_codebooks=n_codebooks,
             codebook_size=codebook_size,
             codebook_dim=codebook_dim,
-            quantizer_dropout=quantizer_dropout,
         )
 
         self.decoder = Decoder(
@@ -192,8 +191,6 @@ class DAC(BaseModel, CodecMixin):
         )
         self.sample_rate = sample_rate
         self.apply(init_weights)
-
-        self.delay = self.get_delay()
 
     def preprocess(self, audio_data, sample_rate):
         if sample_rate is None:
@@ -208,9 +205,8 @@ class DAC(BaseModel, CodecMixin):
 
     def encode(
         self,
-        audio_data: torch.Tensor,
-        n_quantizers: int = None,
-    ):
+        audio_data: torch.Tensor
+        ):
         """Encode given audio data and return quantized latent codes
 
         Parameters
@@ -225,13 +221,10 @@ class DAC(BaseModel, CodecMixin):
         -------
         dict
             A dictionary with the following keys:
-            "z" : Tensor[B x D x T]
-                Quantized continuous representation of input
+
             "codes" : Tensor[B x N x T]
                 Codebook indices for each codebook
                 (quantized discrete representation of input)
-            "latents" : Tensor[B x N*D x T]
-                Projected latents (continuous representation of input before quantization)
             "vq/commitment_loss" : Tensor[1]
                 Commitment loss to train encoder to predict vectors closer to codebook
                 entries
@@ -240,18 +233,32 @@ class DAC(BaseModel, CodecMixin):
             "length" : int
                 Number of samples in input audio
         """
-        z = self.encoder(audio_data)
-        z, codes, latents, commitment_loss, codebook_loss = self.quantizer(
-            z, n_quantizers
-        )
-        return z, codes, latents, commitment_loss, codebook_loss
+        f = None
+        commitment_loss = 0.0
+        codebook_loss = 0.0
+        indices = []
+        for i in range(self.levels):
+            x = AudioSignal(audio_data, self.sample_rate).resample(self.sample_rates[i])
+            x = self.encoders[i](x.audio_data) 
+            if 0 < i < len(self.sample_rates) - 1:
+                resized_z_q_i = F.interpolate(
+                    z_q_i, 
+                    size=x.shape[2],
+                    mode="nearest"
+                )
+                x -= self.phis[i](resized_z_q_i)
+            z_q_i, commitment_loss_i, codebook_loss_i, indices_i, _ = self.quantizer(x)
+            indices.append(indices_i)
+            commitment_loss += commitment_loss_i.mean()
+            codebook_loss += codebook_loss_i.mean()
+        return indices, commitment_loss, codebook_loss
 
-    def decode(self, z: torch.Tensor):
+    def decode(self, codes):
         """Decode given latent codes and return audio data
 
         Parameters
         ----------
-        z : Tensor[B x D x T]
+        codes : list of tensors Tensor[B x T]
             Quantized continuous representation of input
         length : int, optional
             Number of samples in output audio, by default None
@@ -263,13 +270,21 @@ class DAC(BaseModel, CodecMixin):
             "audio" : Tensor[B x 1 x length]
                 Decoded audio data.
         """
+        z = self.phis[-1](self.quantizer.out_proj(self.quantizer.decode_code(codes[-1])))
+        for i in range(self.levels-1):
+            z_q = self.quantizer.out_proj(self.quantizer.decode_code(codes[i]))
+            z_q = F.interpolate(
+                z_q, 
+                size=z.shape[2],
+                mode="nearest"
+            )
+            z += self.phis[i](z_q)
         return self.decoder(z)
 
     def forward(
         self,
         audio_data: torch.Tensor,
-        sample_rate: int = None,
-        n_quantizers: int = None,
+        sample_rate: int = None
     ):
         """Model forward pass
 
@@ -280,9 +295,6 @@ class DAC(BaseModel, CodecMixin):
         sample_rate : int, optional
             Sample rate of audio data in Hz, by default None
             If None, defaults to `self.sample_rate`
-        n_quantizers : int, optional
-            Number of quantizers to use, by default None.
-            If None, all quantizers are used.
 
         Returns
         -------
@@ -307,16 +319,14 @@ class DAC(BaseModel, CodecMixin):
         """
         length = audio_data.shape[-1]
         audio_data = self.preprocess(audio_data, sample_rate)
-        z, codes, latents, commitment_loss, codebook_loss = self.encode(
-            audio_data, n_quantizers
+        codes, commitment_loss, codebook_loss = self.encode(
+            audio_data
         )
 
-        x = self.decode(z)
+        x = self.decode(codes)
         return {
             "audio": x[..., :length],
-            "z": z,
             "codes": codes,
-            "latents": latents,
             "vq/commitment_loss": commitment_loss,
             "vq/codebook_loss": codebook_loss,
         }
@@ -352,6 +362,7 @@ if __name__ == "__main__":
 
     # Make a backward pass
     out.backward(grad)
+    exit(0)
 
     # Check non-zero values
     gradmap = x.grad.squeeze(0)
