@@ -156,16 +156,15 @@ class DAC(BaseModel):
         codebook_size: int = 1024,
         codebook_dim: Union[int, list] = 8,
         sample_rate: int = 44100,
-        levels: int = 4
+        sample_rates: list = [44100]
     ):
         super().__init__()
-        self.levels = levels
         self.encoder_dim = encoder_dim
         self.encoder_rates = encoder_rates
         self.decoder_dim = decoder_dim
         self.decoder_rates = decoder_rates
         self.sample_rate = sample_rate
-        self.sample_rates = [math.ceil(sample_rate / (2**d)) for d in reversed(range(self.levels))]
+        self.sample_rates = sample_rates
 
         if latent_dim is None:
             latent_dim = encoder_dim * (2 ** len(encoder_rates))
@@ -173,16 +172,17 @@ class DAC(BaseModel):
         self.latent_dim = latent_dim
 
         self.hop_length = np.prod(encoder_rates)
-        self.encoders = nn.ModuleList([Encoder(encoder_dim, encoder_rates, latent_dim) for _ in range(self.levels)])
-        self.phis = nn.ModuleList([WNConv1d(latent_dim, latent_dim, kernel_size=3, padding="same") for _ in range(self.levels)])
+        self.encoders = nn.ModuleList([Encoder(encoder_dim, encoder_rates, latent_dim) for _ in range(len(self.sample_rates))])
+        self.phis = nn.ModuleList([WNConv1d(latent_dim, latent_dim, kernel_size=3, padding="same") for _ in range(len(self.sample_rates))])
+        self.quantizers = nn.ModuleList(
+            [
+                VectorQuantize(latent_dim, codebook_size, codebook_dim)
+                for i in range(len(self.sample_rates))
+            ]
+        )
 
         self.codebook_size = codebook_size
         self.codebook_dim = codebook_dim
-        self.quantizer = VectorQuantize(
-            input_dim=latent_dim,
-            codebook_size=codebook_size,
-            codebook_dim=codebook_dim,
-        )
 
         self.decoder = Decoder(
             latent_dim,
@@ -233,21 +233,22 @@ class DAC(BaseModel):
             "length" : int
                 Number of samples in input audio
         """
-        f = None
         commitment_loss = 0.0
         codebook_loss = 0.0
         indices = []
-        for i in range(self.levels):
+        for i in range(len(self.sample_rates)):
             x = AudioSignal(audio_data, self.sample_rate).resample(self.sample_rates[i])
             x = self.encoders[i](x.audio_data) 
-            if 0 < i < len(self.sample_rates) - 1:
+            
+            if i > 0:
                 resized_z_q_i = F.interpolate(
                     z_q_i, 
                     size=x.shape[2],
                     mode="nearest"
                 )
                 x -= self.phis[i](resized_z_q_i)
-            z_q_i, commitment_loss_i, codebook_loss_i, indices_i, _ = self.quantizer(x)
+            
+            z_q_i, commitment_loss_i, codebook_loss_i, indices_i, _ = self.quantizers[i](x)
             indices.append(indices_i)
             commitment_loss += commitment_loss_i.mean()
             codebook_loss += codebook_loss_i.mean()
@@ -270,9 +271,9 @@ class DAC(BaseModel):
             "audio" : Tensor[B x 1 x length]
                 Decoded audio data.
         """
-        z = self.phis[-1](self.quantizer.out_proj(self.quantizer.decode_code(codes[-1])))
-        for i in range(self.levels-1):
-            z_q = self.quantizer.out_proj(self.quantizer.decode_code(codes[i]))
+        z = self.phis[-1](self.quantizers[-1].out_proj(self.quantizers[-1].decode_code(codes[-1])))
+        for i in range(len(self.sample_rates)-1):
+            z_q = self.quantizers[i].out_proj(self.quantizers[i].decode_code(codes[i]))
             z_q = F.interpolate(
                 z_q, 
                 size=z.shape[2],

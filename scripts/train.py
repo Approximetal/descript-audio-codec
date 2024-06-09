@@ -17,7 +17,7 @@ from audiotools.ml.decorators import timer
 from audiotools.ml.decorators import Tracker
 from audiotools.ml.decorators import when
 from torch.utils.tensorboard import SummaryWriter
-
+from torch.distributed.elastic.multiprocessing.errors import record
 import dac
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -345,6 +345,7 @@ def validate(state, val_dataloader, accel):
         state.optimizer_g.consolidate_state_dict()
         state.optimizer_d.consolidate_state_dict()
     return output
+
 
 
 @argbind.bind(without_prefix=True)
