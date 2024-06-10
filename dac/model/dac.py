@@ -156,7 +156,8 @@ class DAC(BaseModel):
         codebook_size: int = 1024,
         codebook_dim: Union[int, list] = 8,
         sample_rate: int = 44100,
-        sample_rates: list = [44100]
+        levels: int = 5
+        #sample_rates: list = [44100]
     ):
         super().__init__()
         self.encoder_dim = encoder_dim
@@ -164,7 +165,8 @@ class DAC(BaseModel):
         self.decoder_dim = decoder_dim
         self.decoder_rates = decoder_rates
         self.sample_rate = sample_rate
-        self.sample_rates = sample_rates
+        # self.sample_rates = sample_rates
+        self.levels = 5
 
         if latent_dim is None:
             latent_dim = encoder_dim * (2 ** len(encoder_rates))
@@ -172,12 +174,14 @@ class DAC(BaseModel):
         self.latent_dim = latent_dim
 
         self.hop_length = np.prod(encoder_rates)
-        self.encoders = nn.ModuleList([Encoder(encoder_dim, encoder_rates, latent_dim) for _ in range(len(self.sample_rates))])
-        self.phis = nn.ModuleList([WNConv1d(latent_dim, latent_dim, kernel_size=3, padding="same") for _ in range(len(self.sample_rates))])
+        self.resolutions = [(1, 2, 2), (2, 4, 4), (4, 8, 8), (4, 12, 12), (4, 16, 16), (4, 32, 32)]
+        self.encoder = Encoder(encoder_dim, encoder_rates, latent_dim)
+        # self.encoders = nn.ModuleList([Encoder(encoder_dim, encoder_rates, latent_dim) for _ in range(len(self.sample_rates))])
+        self.phis = nn.ModuleList([WNConv1d(latent_dim, latent_dim, kernel_size=3, padding="same") for _ in range(self.levels)])
         self.quantizers = nn.ModuleList(
             [
                 VectorQuantize(latent_dim, codebook_size, codebook_dim)
-                for i in range(len(self.sample_rates))
+                for i in range(self.levels)
             ]
         )
 
@@ -236,25 +240,31 @@ class DAC(BaseModel):
         commitment_loss = 0.0
         codebook_loss = 0.0
         indices = []
-        for i in range(len(self.sample_rates)):
-            x = AudioSignal(audio_data, self.sample_rate).resample(self.sample_rates[i])
-            x = self.encoders[i](x.audio_data) 
-            
-            if i > 0:
-                resized_z_q_i = F.interpolate(
-                    z_q_i, 
-                    size=x.shape[2],
-                    mode="nearest"
-                )
-                x -= self.phis[i](resized_z_q_i)
-            
-            z_q_i, commitment_loss_i, codebook_loss_i, indices_i, _ = self.quantizers[i](x)
+        z = self.encoder(audio_data)
+        residual = z
+        quantized = 0
+        for i in range(self.levels):
+            resized_z = F.interpolate(
+                residual, 
+                size=int(residual.shape[2] / (2**(self.levels - i - 1))),
+                mode="nearest"
+            )
+            z_q_i, commitment_loss_i, codebook_loss_i, indices_i, _ = self.quantizers[i](resized_z)
+            resized_z_q_i = F.interpolate(
+                z_q_i, 
+                size=residual.shape[2],
+                mode="nearest"
+            )
+            resized_z_q_i = self.phis[i](resized_z_q_i)
+            residual -= resized_z_q_i
+            quantized = quantized + resized_z_q_i
             indices.append(indices_i)
             commitment_loss += commitment_loss_i.mean()
             codebook_loss += codebook_loss_i.mean()
-        return indices, commitment_loss, codebook_loss
 
-    def decode(self, codes):
+        return indices, commitment_loss, codebook_loss, quantized
+
+    def decode(self, quantized):
         """Decode given latent codes and return audio data
 
         Parameters
@@ -271,7 +281,7 @@ class DAC(BaseModel):
             "audio" : Tensor[B x 1 x length]
                 Decoded audio data.
         """
-        z = self.phis[-1](self.quantizers[-1].out_proj(self.quantizers[-1].decode_code(codes[-1])))
+        """z = self.phis[-1](self.quantizers[-1].out_proj(self.quantizers[-1].decode_code(codes[-1])))
         for i in range(len(self.sample_rates)-1):
             z_q = self.quantizers[i].out_proj(self.quantizers[i].decode_code(codes[i]))
             z_q = F.interpolate(
@@ -279,8 +289,8 @@ class DAC(BaseModel):
                 size=z.shape[2],
                 mode="nearest"
             )
-            z += self.phis[i](z_q)
-        return self.decoder(z)
+            z += self.phis[i](z_q)"""
+        return self.decoder(quantized)
 
     def forward(
         self,
@@ -320,11 +330,11 @@ class DAC(BaseModel):
         """
         length = audio_data.shape[-1]
         audio_data = self.preprocess(audio_data, sample_rate)
-        codes, commitment_loss, codebook_loss = self.encode(
+        codes, commitment_loss, codebook_loss, quantized = self.encode(
             audio_data
         )
 
-        x = self.decode(codes)
+        x = self.decode(quantized)
         return {
             "audio": x[..., :length],
             "codes": codes,
