@@ -94,6 +94,29 @@ class VectorQuantize(nn.Module):
         return z_q, indices
 
 
+class FSQ(nn.Module):
+    def __init__(
+        self,
+        channel_floats: int,
+        input_dim: int,
+    ):
+        super().__init__()
+        _levels = torch.tensor(channel_floats).int()
+        codebook_dim = len(channel_floats)
+        self.register_buffer("_levels", _levels, persistent = False)
+        self.in_proj = WNConv1d(input_dim, codebook_dim, kernel_size=1)
+        self.out_proj = WNConv1d(codebook_dim, input_dim, kernel_size=1)
+
+    def quantize(self, z, eps=1e-1):
+        z = self.in_proj(z)
+        half_l = self._levels.reshape(1, -1, 1) / 2 - eps
+        z = z.tanh() * half_l
+        z_q = z.round()
+        z_q = z + (z_q - z).detach()
+        z_q = z_q / half_l
+        return self.out_proj(z_q)
+
+
 class ResidualVectorQuantize(nn.Module):
     """
     Introduced in SoundStream: An end2end neural audio codec

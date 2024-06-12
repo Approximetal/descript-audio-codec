@@ -237,8 +237,7 @@ def train_loop(state, batch, accel, lambdas):
     with accel.autocast():
         out = state.generator(signal.audio_data, signal.sample_rate)
         recons = AudioSignal(out["audio"], signal.sample_rate)
-        commitment_loss = out["vq/commitment_loss"]
-        codebook_loss = out["vq/codebook_loss"]
+        identity_loss = out["fsq/identity_loss"]
 
     with accel.autocast():
         output["adv/disc_loss"] = state.gan_loss.discriminator_loss(recons, signal)
@@ -260,8 +259,7 @@ def train_loop(state, batch, accel, lambdas):
             output["adv/gen_loss"],
             output["adv/feat_loss"],
         ) = state.gan_loss.generator_loss(recons, signal)
-        output["vq/commitment_loss"] = commitment_loss
-        output["vq/codebook_loss"] = codebook_loss
+        output["fsq/identity_loss"] = identity_loss
         output["loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
 
     state.optimizer_g.zero_grad()
@@ -417,9 +415,10 @@ def train(
             last_iter = (
                 tracker.step == num_iters - 1 if num_iters is not None else False
             )
+            """
             if tracker.step % sample_freq == 0 or last_iter:
                 save_samples(state, val_idx, writer)
-
+            """
             if tracker.step % valid_freq == 0 or last_iter:
                 validate(state, val_dataloader, accel)
                 checkpoint(state, save_iters, save_path)
@@ -428,6 +427,7 @@ def train(
 
             if last_iter:
                 break
+
 
 
 if __name__ == "__main__":
