@@ -153,8 +153,6 @@ class DAC(BaseModel):
         latent_dim: int = 128,
         decoder_dim: int = 1536,
         decoder_rates: List[int] = [8, 8, 4, 2],
-        codebook_sizes: Union[int, list] = 1024,
-        codebook_dim: Union[int, list] = 8,
         sample_rate: int = 44100,
         channel_floats: list = [8, 8, 8, 5, 5, 5],
         downsample_rates: list = [2]
@@ -166,7 +164,6 @@ class DAC(BaseModel):
         self.decoder_rates = decoder_rates
         self.sample_rate = sample_rate
         self.downsample_rates = downsample_rates
-        self.codebook_dim = codebook_dim
         self.channel_floats = channel_floats
 
         if latent_dim is None:
@@ -184,8 +181,6 @@ class DAC(BaseModel):
                 for i in range(len(self.downsample_rates))
             ]
         )
-
-        self.codebook_sizes = codebook_sizes
 
         self.decoder = Decoder(
             latent_dim,
@@ -250,7 +245,7 @@ class DAC(BaseModel):
                 mode="nearest"
             )
             resized_z = self.phis_downsample[i](resized_z)
-            z_q_i = self.quantizers[i].quantize(resized_z)     
+            z_q_i = self.quantizers[i].quantize(resized_z)
             resized_z_q_i = F.interpolate(
                 z_q_i, 
                 size=residual.shape[2],
