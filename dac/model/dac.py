@@ -203,7 +203,8 @@ class DAC(BaseModel):
 
     def encode(
         self,
-        audio_data: torch.Tensor
+        audio_data: torch.Tensor,
+        n_codes: int = None
         ):
         """Encode given audio data and return quantized latent codes
 
@@ -238,7 +239,9 @@ class DAC(BaseModel):
         residual = z
         quantized = 0
         quantized_list = []
-        for i in range(len(self.downsample_rates)):
+        if n_codes is None:
+            n_codes = len(self.downsample_rates)
+        for i in range(n_codes):
             resized_z = F.interpolate(
                 residual, 
                 size=int(residual.shape[2] / self.downsample_rates[i]),
@@ -286,7 +289,8 @@ class DAC(BaseModel):
     def forward(
         self,
         audio_data: torch.Tensor,
-        sample_rate: int = None
+        sample_rate: int = None,
+        n_codes: int = None
     ):
         """Model forward pass
 
@@ -322,7 +326,7 @@ class DAC(BaseModel):
         length = audio_data.shape[-1]
         audio_data = self.preprocess(audio_data, sample_rate)
         quantized, identity_loss = self.encode(
-            audio_data
+            audio_data, n_codes
         )
         x = self.decode(quantized)
         return {
