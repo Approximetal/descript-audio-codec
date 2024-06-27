@@ -4,11 +4,12 @@ DAC.encoder_dim: 256
 DAC.encoder_rates: [2, 4, 8, 8]
 DAC.decoder_dim: 1536
 DAC.decoder_rates: [8, 8, 4, 2]
-DAC.latent_dim: 768
+DAC.latent_dim: 1024
 
 # Quantization
-DAC.downsample_rates: [8, 6, 5, 4, 3, 2, 1, 1]
+DAC.downsample_rates: [8, 8, 4, 4, 2, 2, 1, 1]
 DAC.channel_floats: [8, 8, 8, 5, 5, 5]
+DAC.quantizer_dropout: 0.5
 
 # Discriminator
 Discriminator.sample_rate: 44100
@@ -30,8 +31,8 @@ ExponentialLR.gamma: 0.999996
 amp: false
 val_batch_size: 50
 device: cuda
-num_iters: 400000
-save_iters: [10000, 50000, 100000, 200000]
+num_iters: 500000
+save_iters: [250000]
 valid_freq: 1000
 sample_freq: 10000
 num_workers: 32
@@ -67,11 +68,11 @@ MelSpectrogramLoss.clamp_eps: 1.0e-5
 MelSpectrogramLoss.mag_weight: 0.0
 
 # Data
-batch_size: 16
+batch_size: 8
 train/AudioDataset.duration: 0.4
 train/AudioDataset.n_examples: 10000000
 
-val/AudioDataset.duration: 2.5
+val/AudioDataset.duration: 1.5
 val/build_transform.augment_prob: 1.0
 val/AudioDataset.n_examples: 250
 

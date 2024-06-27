@@ -155,7 +155,8 @@ class DAC(BaseModel):
         decoder_rates: List[int] = [8, 8, 4, 2],
         sample_rate: int = 44100,
         channel_floats: list = [8, 8, 8, 5, 5, 5],
-        downsample_rates: list = [2]
+        downsample_rates: list = [2],
+        quantizer_dropout: float = 0.0
     ):
         super().__init__()
         self.encoder_dim = encoder_dim
@@ -175,13 +176,8 @@ class DAC(BaseModel):
         self.encoder = Encoder(encoder_dim, encoder_rates, latent_dim)
         self.phis_downsample = nn.ModuleList([WNConv1d(latent_dim, latent_dim, kernel_size=3, padding="same") for _ in range(len(self.downsample_rates))])
         self.phis_upsample = nn.ModuleList([WNConv1d(latent_dim, latent_dim, kernel_size=3, padding="same") for _ in range(len(self.downsample_rates))])
-        self.quantizers = nn.ModuleList(
-            [
-                FSQ(channel_floats, latent_dim)
-                for i in range(len(self.downsample_rates))
-            ]
-        )
-
+        self.quantizer = FSQ(channel_floats, latent_dim)
+        self.quantizer_dropout = quantizer_dropout
         self.decoder = Decoder(
             latent_dim,
             decoder_dim,
@@ -241,6 +237,15 @@ class DAC(BaseModel):
         quantized_list = []
         if n_codes is None:
             n_codes = len(self.downsample_rates)
+        if self.training:
+            n_quantizers = torch.ones((z.shape[0],)) * len(self.downsample_rates) + 1
+            dropout = torch.randint(1, len(self.downsample_rates) + 1, (z.shape[0],))
+            n_dropout = int(z.shape[0] * self.quantizer_dropout)
+            n_quantizers[:n_dropout] = dropout[:n_dropout]
+            n_quantizers = n_quantizers.to(z.device)
+        else:
+            n_quantizers = n_codes
+
         for i in range(n_codes):
             resized_z = F.interpolate(
                 residual, 
@@ -248,17 +253,20 @@ class DAC(BaseModel):
                 mode="nearest"
             )
             resized_z = self.phis_downsample[i](resized_z)
-            z_q_i = self.quantizers[i].quantize(resized_z)
+            z_q_i = self.quantizer.quantize(resized_z)
             resized_z_q_i = F.interpolate(
                 z_q_i, 
                 size=residual.shape[2],
                 mode="nearest"
             )
             resized_z_q_i = self.phis_upsample[i](resized_z_q_i)
+            mask = (
+                torch.full((residual.shape[0],), fill_value=i, device=residual.device) < n_quantizers
+            )
+
             residual -= resized_z_q_i
-            quantized += resized_z_q_i
+            quantized += resized_z_q_i * mask[:, None, None]
             quantized_list.append(quantized)
-            # indices.append(indices_i)
 
         identity_loss = 0.0
         z_detach = z.detach()
