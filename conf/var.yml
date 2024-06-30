@@ -4,11 +4,12 @@ DAC.encoder_dim: 256
 DAC.encoder_rates: [2, 4, 8, 8]
 DAC.decoder_dim: 1536
 DAC.decoder_rates: [8, 8, 4, 2]
-DAC.latent_dim: 768
+DAC.latent_dim: 1024
 
 # Quantization
-DAC.downsample_rates: [8, 6, 5, 4, 3, 2, 1, 1]
+DAC.downsample_rates: [8, 8, 4, 4, 2, 2, 1, 1]
 DAC.channel_floats: [8, 8, 8, 5, 5, 5]
+DAC.quantizer_dropout: 0.5
 
 # Discriminator
 Discriminator.sample_rate: 44100
@@ -84,23 +85,23 @@ AudioDataset.without_replacement: true
 
 train/build_dataset.folders:
   speech_fb:
-    - /data/shared_data/raw/daps/train
+    - /data/shared_data/audio_codec/daps/train
   speech_hq:
-    - /data/shared_data/raw/vctk
-    - /data/shared_data/raw/vocalset
-    - /data/shared_data/raw/read_speech
-    - /data/shared_data/raw/french_speech
+    - /data/shared_data/audio_codec/vctk
+    - /data/shared_data/audio_codec/vocalset
+    - /data/shared_data/audio_codec/read_speech
+    - /data/shared_data/audio_codec/french_speech
   speech_uq:
-    - /data/shared_data/raw/emotional_speech/
+    - /data/shared_data/audio_codec/emotional_speech/
     # - /data/shared_data/raw/common_voice/
-    - /data/shared_data/raw/german_speech/
-    - /data/shared_data/raw/russian_speech/
-    - /data/shared_data/raw/spanish_speech/
+    - /data/shared_data/audio_codec/german_speech/
+    - /data/shared_data/audio_codec/russian_speech/
+    - /data/shared_data/audio_codec/spanish_speech/
 
 val/build_dataset.folders:
   speech_hq:
-    - /data/shared_data/raw/daps/val
+    - /data/shared_data/audio_codec/daps/val
 
 test/build_dataset.folders:
   speech_hq:
-    - /data/shared_data/raw/daps/test
+    - /data/shared_data/audio_codec/daps/test
