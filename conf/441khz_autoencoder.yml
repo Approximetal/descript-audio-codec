@@ -1,10 +1,10 @@
 # Model setup
 DAC.sample_rate: 44100
 DAC.encoder_dim: 64
-DAC.encoder_rates: [2, 4, 8, 8]
+DAC.encoder_rates: [2, 6, 8, 8]
 DAC.decoder_dim: 1536
-DAC.decoder_rates: [8, 8, 4, 2]
-DAC.latent_dim: 128
+DAC.decoder_rates: [8, 8, 6, 2]
+DAC.latent_dim: 32
 
 # Discriminator
 Discriminator.sample_rate: 44100
@@ -63,7 +63,7 @@ MelSpectrogramLoss.clamp_eps: 1.0e-5
 MelSpectrogramLoss.mag_weight: 0.0
 
 # Data
-batch_size: 72
+batch_size: 36
 train/AudioDataset.duration: 0.38
 train/AudioDataset.n_examples: 10000000
 
@@ -80,24 +80,24 @@ AudioDataset.without_replacement: true
 
 train/build_dataset.folders:
   speech_fb:
-    - /data/shared_data/raw/daps/train
+    - /data/daps/train
   speech_hq:
-    - /data/shared_data/raw/vctk
-    - /data/shared_data/raw/vocalset
-    - /data/shared_data/raw/read_speech
-    - /data/shared_data/raw/french_speech
+    - /data/studio_sound/speech/vctk
+    - /data/vocalset
+    - /data/read_speech
+    - /data/french_speech
   speech_uq:
-    - /data/shared_data/raw/emotional_speech/
-    #- /data/shared_data/raw/common_voice/
-    - /data/shared_data/raw/german_speech/
-    - /data/shared_data/raw/russian_speech/
-    - /data/shared_data/raw/spanish_speech/
+    - /data/emotional_speech/
+    # - /data/common_voice/
+    - /data/german_speech/
+    - /data/russian_speech/
+    - /data/spanish_speech/
 
 val/build_dataset.folders:
   speech_hq:
-    - /data/shared_data/raw/daps/test
+    - /data/daps/val
 
 test/build_dataset.folders:
   speech_hq:
-    - /data/shared_data/raw/daps/test
+    - /data/daps/test
 
